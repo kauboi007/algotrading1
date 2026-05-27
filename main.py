@@ -3,7 +3,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import numpy as np
-import datetime as dt
 import yfinance as yf
 import requests
 from io import StringIO
@@ -13,6 +12,7 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import risk_models,expected_returns
+from pypfopt import objective_functions
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -142,8 +142,9 @@ for date in dates:
 
 def optimizeweights(prices):
     returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
-    cov=risk_models.sample_cov(prices=prices,frequency=252)
+    cov=risk_models.CovarianceShrinkage(prices=prices).ledoit_wolf()
     ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
+    ef.add_objective(objective_functions.L2_reg,gamma=0.1)
     ef.max_sharpe()
     return ef.clean_weights()
 
