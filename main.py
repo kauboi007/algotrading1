@@ -102,7 +102,7 @@ data.loc[:,factors]=data.groupby('ticker',group_keys=False)[factors].apply(lambd
 def get_clusters(df):
     scaler = StandardScaler()
     scaled = scaler.fit_transform(df)
-    df['cluster'] = KMeans(n_clusters=4, random_state=0, init='random').fit(scaled).labels_
+    df['cluster'] = KMeans(n_clusters=4, random_state=0, init='k-means++').fit(scaled).labels_
     return df
 data = data.dropna().groupby('date', group_keys=False).apply(get_clusters)
 highest_rsi_cluster = data.groupby(level=0).apply(
@@ -144,7 +144,7 @@ def optimizeweights(prices):
     returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
     cov=risk_models.CovarianceShrinkage(prices=prices).ledoit_wolf()
     ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
-    ef.add_objective(objective_functions.L2_reg,gamma=0.1)
+    ef.add_objective(objective_functions.L2_reg,gamma=0.5)
     ef.max_sharpe()
     return ef.clean_weights()
 
@@ -189,20 +189,47 @@ for startdate in fixeddates.keys():
 portfoliodf = portfoliodf.dropna()
 portfolioreturns = portfoliodf.groupby(level=0)['weighted_return'].sum().to_frame('strategy_return')
 
+
 nifty500index = yf.download('^CRSLDX', start=portfolioreturns.index.min(), end=portfolioreturns.index.max())
 nifty500returns = np.log(nifty500index['Close']).diff().dropna()
 nifty500returns.columns = ['nifty500_return']
 
 latest = portfoliodf.dropna().index.get_level_values('date').max()
+
+#portfolio with the weights
 print(portfoliodf.loc[latest].dropna()[['weight']])
+
+daily_returns_from_strat=portfolioreturns['strategy_return']
+daily_returns_from_nifty=nifty500returns['nifty500_return']
+
+negative_returns_strat=daily_returns_from_strat[daily_returns_from_strat<0]
+
+strategycurve=daily_returns_from_strat.add(1).cumprod()
+niftycurve=daily_returns_from_nifty.add(1).cumprod()
+
+#performace metrics
+years=(strategycurve.index.max()-strategycurve.index.min()).days/365.25
+runningmax=strategycurve.cummax()
+risk_free_returns=0.065 #RBI data not sure tho
+
+cagr=(strategycurve.iloc[-1])**(1/years)-1
+volatility=daily_returns_from_strat.std()*np.sqrt(252)
+sharpe_ratio=((daily_returns_from_strat.mean()*252)-risk_free_returns)/volatility
+drawdown=(strategycurve/runningmax)-1
+mdd=drawdown.min()
+calmar_ratio=cagr/abs(mdd)
+sortino_ratio=((daily_returns_from_strat.mean()*252)-risk_free_returns)/(negative_returns_strat.std()*np.sqrt(252))
+metrics={'CAGR':cagr,'Volatility':volatility,'Sharpe ratio':sharpe_ratio,'max drawdown':mdd,
+         'calmar ratio':calmar_ratio,'sortino':sortino_ratio}
+print(metrics)
 
 plt.figure(figsize=(14,6))
 plt.xticks(rotation=45)
 ax=plt.gca()
 ax.xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator())
 ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%m-%Y'))
-plt.plot((portfolioreturns['strategy_return'].add(1).cumprod() - 1)*100, label='strategy')
-plt.plot((nifty500returns['nifty500_return'].add(1).cumprod() - 1)*100, label='NIFTY 500')
+plt.plot((strategycurve - 1)*100, label='strategy')
+plt.plot((niftycurve - 1)*100, label='NIFTY 500')
 plt.legend()
 plt.title('strategy vs NIFTY 500')
 plt.ylabel('Cumulative Return %')
