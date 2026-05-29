@@ -131,22 +131,48 @@ for i in data.index.get_level_values('date').unique().to_list():
     plotclusters(g)
 '''
 filterdf=data[data['is_best']].copy()
-
 filterdf=filterdf.reset_index(level=1)
 filterdf.index=filterdf.index+pd.DateOffset(1)
 filterdf=filterdf.reset_index().set_index(['date','ticker'])
+
 dates=filterdf.index.get_level_values('date').unique().tolist()
 fixeddates={}
+
 for date in dates:
     fixeddates[date]=filterdf.xs(date,level=0).index.to_list()
 
 def optimizeweights(prices):
+    if(prices.shape[1]<2):
+        return {col:1/prices.shape[1] for col in prices.columns}
+
     returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
     cov=risk_models.CovarianceShrinkage(prices=prices).ledoit_wolf()
-    ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
-    ef.add_objective(objective_functions.L2_reg,gamma=0.5)
-    ef.max_sharpe()
-    return ef.clean_weights()
+
+    positive_returns_stocks=(returns>0).sum()
+
+    try:
+        ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
+        ef.add_objective(objective_functions.L2_reg,gamma=0.5)
+        if(positive_returns_stocks>=2):
+            ef.max_sharpe()
+        else:
+            print("Max sharpe optimizing has failed - not enough positive returning stocks")
+            ef.min_volatility()
+        weights=ef.clean_weights()
+
+    except Exception:
+        try:
+            ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
+            ef.add_objective(objective_functions.L2_reg,gamma=0.5)
+            ef.min_volatility()
+            weights=ef.clean_weights()
+        except Exception:
+            print("Min volatility optimizing has also failed - last resort assigning  equal weights")
+            n=prices.shape[1]
+            weights={col:1/n for col in prices.columns}
+
+    w = {k: v for k, v in weights.items() if v > 0}
+    return w
 
 
 if os.path.exists(PRICE_CACHE):
