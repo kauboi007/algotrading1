@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import risk_models,expected_returns
 from pypfopt import objective_functions
+from paper_trade_tracker import start_month
 from scipy.stats import kendalltau
 import warnings
 warnings.filterwarnings('ignore')
@@ -34,11 +35,14 @@ else:
     response=requests.get(wikiurl,headers=headers)
     tables=pd.read_html(StringIO(response.text))
     nifty500=tables[4]
-    print(nifty500.columns.tolist())
+    print(nifty500.head())
     nifty500.columns = ['Slno','Company Name','Industry','Symbol' ,'Series' ,'ISIN Code']
+    nifty500.columns = ['Slno','Company Name','Industry','Symbol' ,'Series' ,'ISIN Code']
+    nifty500=nifty500[nifty500['Symbol']!='Symbol']  # drop header row if present
+    nifty500=nifty500[nifty500['Slno']!='Sl.No']     # belt and braces
     symbolslist = nifty500["Symbol"].tolist()
     symbolslist=[s+'.NS' for s in symbolslist]
-    symbolslist=symbolslist[1:]
+    print(symbolslist[:5])
     enddate=pd.Timestamp.today()
     startdate=enddate-pd.DateOffset(years=5)
     df=yf.download(tickers=symbolslist,start=startdate,end=enddate).stack(future_stack=True)
@@ -305,3 +309,25 @@ plt.legend()
 plt.title('strategy vs NIFTY 500')
 plt.ylabel('Cumulative Return %')
 plt.show()
+
+
+#paper trade code 
+
+today = niftyprices.index.max()
+is_bull = regime_detection(today, niftyprices)
+ 
+latest_weights_dict = (
+    portfoliodf.xs(latest, level='date')
+    .dropna()[['weight']]
+    ['weight']
+    .to_dict()
+)
+ 
+print("\n" + "="*55)
+print(f"  PAPER TRADE — NEXT MONTH")
+print(f"  Regime: {'🐂 BULL' if is_bull else '🐻 BEAR'}")
+print("="*55)
+ 
+start_month(latest_weights_dict, is_bull)
+
+ 
