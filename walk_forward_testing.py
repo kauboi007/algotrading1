@@ -7,12 +7,14 @@ import yfinance as yf
 import requests
 from io import StringIO
 import os
+import math
 import pandas_ta
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import risk_models,expected_returns
 from pypfopt import objective_functions
+from scipy.stats import kendalltau
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -20,6 +22,8 @@ wikiurl="https://en.wikipedia.org/wiki/NIFTY_500"
 CACHE_FILE= "nifty500data.parquet"
 PRICE_CACHE = "pricedatadaily.parquet"
 outlier_cutoff=0.005
+#walk foward testing limits
+TEST_START='2024-01-01'
 
 if os.path.exists(CACHE_FILE):
     df=pd.read_parquet(CACHE_FILE)
@@ -30,6 +34,7 @@ else:
     response=requests.get(wikiurl,headers=headers)
     tables=pd.read_html(StringIO(response.text))
     nifty500=tables[4]
+    print(nifty500.columns.tolist())
     nifty500.columns = ['Slno','Company Name','Industry','Symbol' ,'Series' ,'ISIN Code']
     symbolslist = nifty500["Symbol"].tolist()
     symbolslist=[s+'.NS' for s in symbolslist]
@@ -138,16 +143,34 @@ dates=filterdf.index.get_level_values('date').unique().tolist()
 fixeddates={}
 
 for date in dates:
-    fixeddates[date]=filterdf.xs(date,level=0).index.to_list()
+    if(pd.Timestamp(date)>=pd.Timestamp(TEST_START)):
+        fixeddates[date]=filterdf.xs(date,level=0).index.to_list()
 
 def optimizeweights(prices):
     if(prices.shape[1]<2):
         return {col:1/prices.shape[1] for col in prices.columns}
+    '''
+    cols=prices.columns
+    returns=np.log(prices).diff().dropna()
+    n=prices.shape[1]
+    tau_matrix=np.zeros((n,n))
+    for i in range(n):
+        for j in range(n):
+            tau_matrix[i][j]=kendalltau(returns[cols[i]],returns[cols[j]])[0]
 
+    pear_matrix=np.zeros((n,n))
+    for i in range(n):
+        for j in range(n):
+            pear_matrix[i][j]=math.sin(((math.pi)/2)*tau_matrix[i][j])
+    
+    vols=returns.std().values
+    cov_matrix=pear_matrix*np.outer(vols,vols)
+    cov_matrix+=np.eye(n)*1e-8
+    cov=pd.DataFrame(cov_matrix,index=cols,columns=cols)
+    '''
     returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
-    cov=risk_models.CovarianceShrinkage(prices=prices).ledoit_wolf()
-
     positive_returns_stocks=(returns>0).sum()
+    cov = risk_models.CovarianceShrinkage(prices).ledoit_wolf()
 
     try:
         ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
@@ -195,8 +218,9 @@ def regime_detection(date,prices):
         return True #bull market
     return False #bear market death cross
 
+prev_weights={}
 for startdate in fixeddates.keys():
-    if(not regime_detection(startdate,niftyprices)): #if its a bear market skip the date
+    if(not regime_detection(startdate,niftyprices)):
         continue
     enddate=pd.to_datetime(startdate)+pd.offsets.MonthEnd(0)
     cols=fixeddates[startdate]
@@ -206,21 +230,30 @@ for startdate in fixeddates.keys():
     threshold = int(0.8 * len(optdf))
     optdf = optdf.dropna(axis=1, thresh=threshold)
     optdf = optdf.ffill().bfill()
+
     if optdf.shape[1] < 2:
         continue
-    weights=optimizeweights(prices=optdf)
-    weights=pd.DataFrame(weights,index=pd.Series(0))
+
+    w_dict=optimizeweights(prices=optdf)
     
     tempdf=returnsdf[startdate:enddate]
     tempdf=tempdf.stack().to_frame('return').reset_index(level=0)
     tempdf.index.name='ticker'
     tempdf=tempdf.rename(columns={'Date':'date'})
-    w=weights.stack().to_frame('weight')
+    w = pd.DataFrame(w_dict, index=pd.Series(0)).stack().to_frame('weight')
+
+    all_stocks = set(w_dict.keys()) | set(prev_weights.keys())
+    turnover = sum(abs(w_dict.get(s,0) - prev_weights.get(s,0)) for s in all_stocks)
+    cost=turnover*0.0022
+    prev_weights=w_dict
+
     w.index=w.index.droplevel(0)
     w.index.name='ticker'
     tempdf=tempdf.join(w)
     tempdf=tempdf.reset_index().set_index(['date','ticker'])
     tempdf['weighted_return']=tempdf['return']*tempdf['weight']
+    tempdf.loc[tempdf.index.get_level_values('date')==tempdf.index.get_level_values('date').min(),
+                'weighted_return']-=cost/len(tempdf.index.get_level_values('date').unique())
     
     portfoliodf=pd.concat([portfoliodf,tempdf],axis=0)
 
