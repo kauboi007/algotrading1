@@ -30,7 +30,6 @@ else:
     response=requests.get(wikiurl,headers=headers)
     tables=pd.read_html(StringIO(response.text))
     nifty500=tables[4]
-    print(nifty500.columns.tolist())
     nifty500.columns = ['Slno','Company Name','Industry','Symbol' ,'Series' ,'ISIN Code']
     symbolslist = nifty500["Symbol"].tolist()
     symbolslist=[s+'.NS' for s in symbolslist]
@@ -171,9 +170,10 @@ def optimizeweights(prices):
             n=prices.shape[1]
             weights={col:1/n for col in prices.columns}
 
-    w = {k: v for k, v in weights.items() if v > 0}
+    w = {k: v for k, v in weights.items() if v > 0.01}
+    total=sum(w.values())
+    w={k:v/total for k,v in w.items()}
     return w
-
 
 if os.path.exists(PRICE_CACHE):
     newdf = pd.read_parquet(PRICE_CACHE)
@@ -185,7 +185,19 @@ else:
 returnsdf=np.log(newdf['Close']).diff()
 portfoliodf=pd.DataFrame()
 
+first_date=min(fixeddates.keys())
+niftyprices=yf.download('^CRSLDX',start=first_date-pd.DateOffset(days=300),end=pd.Timestamp.today())['Close'].squeeze()
+
+def regime_detection(date,prices):
+    ma50=prices[date-pd.DateOffset(days=50):date].mean()
+    ma200=prices[date-pd.DateOffset(days=200):date].mean()
+    if(ma50>ma200): #golden cross
+        return True #bull market
+    return False #bear market death cross
+
 for startdate in fixeddates.keys():
+    if(not regime_detection(startdate,niftyprices)): #if its a bear market skip the date
+        continue
     enddate=pd.to_datetime(startdate)+pd.offsets.MonthEnd(0)
     cols=fixeddates[startdate]
     optmizationstartdate=pd.to_datetime(startdate)-pd.DateOffset(months=12)
